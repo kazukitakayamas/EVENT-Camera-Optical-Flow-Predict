@@ -84,7 +84,6 @@ def main(args: DictConfig):
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Dataloader setup
     loader = DatasetProvider(
         dataset_path=Path(args.dataset_path),
         representation_type=RepresentationType.VOXEL,
@@ -100,22 +99,23 @@ def main(args: DictConfig):
     # Model setup
     model = EVFlowNet(args.train).to(device)
 
+    '''
     # 事前学習モデルのロード
     if args.train.pretrained_model_path is not None:
         model.load_state_dict(torch.load(args.train.pretrained_model_path, map_location=device))
         print(f"Pretrained model loaded from {args.train.pretrained_model_path}")
+    '''
 
     # Optimizer setup
     base_optimizer = optim.RAdam(model.parameters(), lr=args.train.initial_learning_rate, weight_decay=args.train.weight_decay)
     optimizer = Lookahead(base_optimizer, k=5, alpha=0.5)   # Lookaheadの適用
 
-    # Learning rate scheduler setup
+
     scheduler = CosineAnnealingLR(optimizer, T_max=args.train.epochs)
 
-    # Adding a layer to adjust the input channels if needed
     input_adjust_layer = nn.Conv2d(in_channels=15, out_channels=4, kernel_size=1).to(device)
 
-    # Training loop
+
     model.train()
     for epoch in range(args.train.epochs):
         total_loss = 0
@@ -138,12 +138,12 @@ def main(args: DictConfig):
 
             total_loss += loss.item()
 
-        # Step the scheduler with the epoch's loss
+
         scheduler.step()
 
         print(f'Epoch {epoch + 1}, Loss: {total_loss / len(train_data)}')
 
-    # Create the directory if it doesn't exist
+
     model_save_dir = "/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/学習モデル/sub"
     if not os.path.exists(model_save_dir):
         os.makedirs(model_save_dir)
@@ -153,7 +153,7 @@ def main(args: DictConfig):
     torch.save(model.state_dict(), model_path)
     print(f"Model saved to {model_path}")
 
-    # Predicting
+
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     flow: torch.Tensor = torch.tensor([]).to(device)
@@ -164,7 +164,7 @@ def main(args: DictConfig):
             batch: Dict[str, Any]
             event_image = batch["event_volume"].to(device)
 
-            # Adjust input channels only if needed
+
             if event_image.shape[1] == 15:
                 event_image = input_adjust_layer(event_image)
 
@@ -179,7 +179,7 @@ def main(args: DictConfig):
                 
         print("test done")
 
-    # Save submission
+
     file_name = "/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/submit_fol/sub/submission_00"
     save_optical_flow_to_npy(flow, file_name)
 
