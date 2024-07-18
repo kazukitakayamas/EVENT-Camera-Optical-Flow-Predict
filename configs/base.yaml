@@ -1,0 +1,31 @@
+キーボード ショートカットの更新 … 2024年8月1日木曜日に、ドライブのキーボード ショートカットが更新され、頭文字検索が利用できるようになります。詳細
+dataset_path: "/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/data"
+seed: 42
+num_epoch: 100
+data_loader:
+  common:
+    num_voxel_bins: 15
+  train:
+    batch_size: 16
+    shuffle: false
+  test:
+    batch_size: 1
+    shuffle: false
+train:
+  no_batch_norm: false
+  initial_learning_rate: 0.001 # default:１、0.01　２、0.0001 ３、0.1
+  weight_decay: 0.000001 # default:１、0.00001　２、0.0000001　３、0.001
+  epochs: 10
+  input_height: 480
+  input_width: 640
+  pretrained_model_path: "/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/学習モデル/sub/model_20240717195932.pth"
+  small: false  # ここに追加
+  dropout: 0.0  # ここに追加
+  alternate_corr: false  # ここに追加
+  corr_levels: 4  # ここに追加
+  corr_radius: 4  # ここに追加
+
+
+
+  #"/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/学習モデル/model_20240703183703.pth" 一サイクル目30エポック
+  #'/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/学習モデル/model_20240703234836.pth'2サイクル30エポック
