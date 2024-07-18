@@ -54,10 +54,10 @@ class ZCAWhitening():
         x = x.reshape(size)
         return x.to("cpu")
 
-class EventBasedNoiseFilter:
-    def __init__(self, threshold=0.5, neighborhood_size=5, device="cuda"):
-        self.threshold = threshold
+class SpatialTemporalConsistencyFilter:
+    def __init__(self, neighborhood_size=3, min_event_count=5, device="cuda"):
         self.neighborhood_size = neighborhood_size
+        self.min_event_count = min_event_count
         self.device = device
 
     def __call__(self, x, y, t, p):
@@ -68,9 +68,23 @@ class EventBasedNoiseFilter:
                 (y >= y[i] - self.neighborhood_size // 2) & (y <= y[i] + self.neighborhood_size // 2) &
                 (t >= t[i] - 500) & (t <= t[i] + 500)
             )
-            if torch.mean(p[neighborhood].float()) < self.threshold:
+            if torch.sum(neighborhood) < self.min_event_count:
                 valid_indices[i] = False
         return x[valid_indices], y[valid_indices], t[valid_indices], p[valid_indices]
+
+class AdaptiveWindowAdjustment:
+    def __init__(self, target_event_count=50000, device="cuda"):
+        self.target_event_count = target_event_count
+        self.device = device
+
+    def __call__(self, events, get_events_fn):
+        current_event_count = events['t'].size(0)
+        adjustment_factor = math.sqrt(self.target_event_count / current_event_count)
+        t_center = (events['t'][0] + events['t'][-1]) / 2
+        t_range = (events['t'][-1] - events['t'][0]) * adjustment_factor / 2
+        t_start_us = max(t_center - t_range, 0).item()
+        t_end_us = (t_center + t_range).item()
+        return get_events_fn(t_start_us, t_end_us)
 
 class EventSlicer:
     def __init__(self, h5f: h5py.File):
@@ -149,14 +163,6 @@ class EventSlicer:
             return None
         return self.ms_to_idx[time_ms].item()
 
-class SparseFilter:
-    def __init__(self, threshold=0.1, device="cuda"):
-        self.threshold = threshold
-        self.device = device
-
-    def __call__(self, event_volume):
-        return event_volume * (event_volume.abs() > self.threshold).float()
-
 class MixedPatchContrastMaximization:
     def __init__(self, image_shape, calibration_parameter, solver_config={}, optimizer_config={}, output_config={}, visualize_module=None):
         self.image_shape = image_shape
@@ -190,7 +196,7 @@ class MixedPatchContrastMaximization:
         patch_h, patch_w = patch_size
         slide_h, slide_w = sliding_window
         center_x = np.arange(0, image_h - patch_h + slide_h, slide_h) + patch_h / 2
-        center_y = np.arange(0, image_w - patch_w + slide_w, slide_w) + patch_w / 2
+        center_y = np.arange(0, image_w - patch_w + slide_w, patch_w / 2)
         xx, yy = np.meshgrid(center_x, center_y)
         patch_shape = xx.T.shape
         xx = xx.T.reshape(-1)
@@ -328,7 +334,7 @@ class MixedPatchContrastMaximization:
 
 class Sequence(Dataset):
     def __init__(self, seq_path: Path, representation_type: RepresentationType, mode: str = 'test', delta_t_ms: int = 100,
-                 num_bins: int = 4, transforms=[], name_idx=0, visualize=False, load_gt=False, zca=None, ebn_filter=None, sparse_filter=None):
+                 num_bins: int = 4, transforms=[], name_idx=0, visualize=False, load_gt=False, zca=None, stc_filter=None, adaptive_window=None):
         assert num_bins >= 1
         assert delta_t_ms == 100
         assert seq_path.is_dir()
@@ -341,8 +347,8 @@ class Sequence(Dataset):
         self.load_gt = load_gt
         self.transforms = []
         self.zca = zca
-        self.ebn_filter = ebn_filter
-        self.sparse_filter = sparse_filter
+        self.stc_filter = stc_filter
+        self.adaptive_window = adaptive_window
         if self.mode == "test":
             assert not load_gt
             ev_dir_location = seq_path / 'events_left'
@@ -403,8 +409,6 @@ class Sequence(Dataset):
 
         if self.zca:
             voxel_grid = self.zca(voxel_grid)
-        if self.sparse_filter:
-            voxel_grid = self.sparse_filter(voxel_grid)
 
         if device == 'cpu':
             voxel_grid = voxel_grid.to('cpu')
@@ -460,11 +464,15 @@ class Sequence(Dataset):
         output['visualize'] = self.visualize_samples
         event_data = self.event_slicer.get_events(ts_start, ts_end)
 
-        # Event-based Noise Filteringの適用
-        if self.ebn_filter:
-            event_data['x'], event_data['y'], event_data['t'], event_data['p'] = self.ebn_filter(
+        # 近傍一致ノイズフィルタの適用
+        if self.stc_filter:
+            event_data['x'], event_data['y'], event_data['t'], event_data['p'] = self.stc_filter(
                 event_data['x'], event_data['y'], event_data['t'], event_data['p']
             )
+
+        # 時間ウィンドウの適応的調整
+        if self.adaptive_window:
+            event_data = self.adaptive_window(event_data, self.event_slicer.get_events)
 
         p = event_data['p']
         t = event_data['t']
@@ -566,9 +574,9 @@ class Sequence(Dataset):
 
 class SequenceRecurrent(Sequence):
     def __init__(self, seq_path: Path, representation_type: RepresentationType, mode: str = 'test', delta_t_ms: int = 100,
-                 num_bins: int = 15, transforms=None, sequence_length=1, name_idx=0, visualize=False, load_gt=False, zca=None, ebn_filter=None, sparse_filter=None):
+                 num_bins: int = 15, transforms=None, sequence_length=1, name_idx=0, visualize=False, load_gt=False, zca=None, stc_filter=None, adaptive_window=None):
         super(SequenceRecurrent, self).__init__(seq_path, representation_type, mode, delta_t_ms, transforms=transforms,
-                                                name_idx=name_idx, visualize=visualize, load_gt=load_gt, zca=zca, ebn_filter=ebn_filter, sparse_filter=sparse_filter)
+                                                name_idx=name_idx, visualize=visualize, load_gt=load_gt, zca=zca, stc_filter=stc_filter, adaptive_window=adaptive_window)
         self.crop_size = self.transforms['randomcrop'] if 'randomcrop' in self.transforms else None
         self.sequence_length = sequence_length
         self.valid_indices = self.get_continuous_sequences()
@@ -638,7 +646,7 @@ class SequenceRecurrent(Sequence):
 
 class DatasetProvider:
     def __init__(self, dataset_path: Path, representation_type: RepresentationType, delta_t_ms: int = 100, num_bins=4,
-                 config=None, visualize=False, zca=None, ebn_filter=None, sparse_filter=None):
+                 config=None, visualize=False, zca=None, stc_filter=None, adaptive_window=None):
         test_path = Path(os.path.join(dataset_path, 'test'))
         train_path = Path(os.path.join(dataset_path, 'train'))
         assert dataset_path.is_dir(), str(dataset_path)
@@ -647,14 +655,14 @@ class DatasetProvider:
         self.config = config
         self.name_mapper_test = []
         self.zca = zca
-        self.ebn_filter = ebn_filter
-        self.sparse_filter = sparse_filter
+        self.stc_filter = stc_filter
+        self.adaptive_window = adaptive_window
 
         test_sequences = list()
         for child in test_path.iterdir():
             self.name_mapper_test.append(str(child).split("/")[-1])
             test_sequences.append(Sequence(child, representation_type, 'test', delta_t_ms, num_bins,
-                                           transforms=[], name_idx=len(self.name_mapper_test) - 1, visualize=visualize, zca=self.zca, ebn_filter=self.ebn_filter, sparse_filter=self.sparse_filter))
+                                           transforms=[], name_idx=len(self.name_mapper_test) - 1, visualize=visualize, zca=self.zca, stc_filter=self.stc_filter, adaptive_window=self.adaptive_window))
 
         self.test_dataset = torch.utils.data.ConcatDataset(test_sequences)
 
@@ -665,7 +673,7 @@ class DatasetProvider:
         for seq in seqs:
             extra_arg = dict()
             train_sequences.append(Sequence(Path(train_path) / seq, representation_type=representation_type, mode="train",
-                                            load_gt=True, zca=self.zca, ebn_filter=self.ebn_filter, sparse_filter=self.sparse_filter, **extra_arg))
+                                            load_gt=True, zca=self.zca, stc_filter=self.stc_filter, adaptive_window=self.adaptive_window, **extra_arg))
         self.train_dataset = torch.utils.data.ConcatDataset(train_sequences)
 
     def get_test_dataset(self):
@@ -716,10 +724,10 @@ def main():
     visualize = False
 
     zca = ZCAWhitening()
-    ebn_filter = EventBasedNoiseFilter()
-    sparse_filter = SparseFilter()
+    stc_filter = SpatialTemporalConsistencyFilter()
+    adaptive_window = AdaptiveWindowAdjustment()
 
     provider = DatasetProvider(dataset_path, representation_type, delta_t_ms, num_bins, visualize=visualize,
-                               zca=zca, ebn_filter=ebn_filter, sparse_filter=sparse_filter)
+                               zca=zca, stc_filter=stc_filter, adaptive_window=adaptive_window)
     train_dataset = provider.get_train_dataset()
     test_dataset = provider.get_test_dataset()
