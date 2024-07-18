@@ -18,12 +18,13 @@ import random
 import numpy as np
 
 # sys.path.appendを最初に配置
+#変更してください
 sys.path.append('/content/drive/MyDrive/2024 DL Basic/自習用/最終課題/event-camera/dl_lecture_competition_pub')
 
-from src.models.evflownet_1 import EVFlowNet
-from src.datasets_3 import DatasetProvider
+from src.models.evflownet import EVFlowNet
+from src.datasets import DatasetProvider
 from enum import Enum, auto
-from src.datasets_3 import train_collate
+from src.datasets import train_collate
 from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, Any
